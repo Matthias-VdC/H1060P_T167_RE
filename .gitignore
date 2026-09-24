@@ -1,0 +1,7 @@
+*
+
+# whitelist
+!.gitignore
+!model.py
+!patch_fw.py
+!LICENSE
