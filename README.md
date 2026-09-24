@@ -14,6 +14,8 @@ image *you* download. Do not redistribute patched images.
 a T205 board (2021+ tablets, different silicon) or any other model — step 1
 below checks this.
 
+**AI DISCLOSURE** I made use of AI heavily during the reverse engineering and writing of scripts.
+
 ## Requirements
 
 - Python 3 and libusb (`libusb-1.0`, in every distro's repos)
