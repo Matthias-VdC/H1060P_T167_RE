@@ -1,8 +1,9 @@
 # H1060P / T167 report-rate unlock
 
 Patches for the Huion H1060P (board **T167**, firmware **190325**) that raise
-the tablet's USB report rate from the stock **~231 Hz** to **~500 Hz** and
-optionally disable the built-in input smoothing — for lower input latency in
+the tablet's USB report rate from the stock **~231 Hz** to **~470 Hz** (an
+experimental **~500 Hz** build is also available) and optionally disable the
+built-in input smoothing — for lower input latency in
 games like osu!.
 
 Everything here is your own risk, for your own device. The tools contain no
@@ -15,9 +16,18 @@ below checks this.
 
 ## Requirements
 
-- Linux, Python 3, and `libusb` (`libusb-1.0`, in every distro's repos)
+- Python 3 and libusb (`libusb-1.0`, in every distro's repos)
 - A USB cable, and the willingness to reflash. The flash is reversible: the
   stock firmware can always be flashed back the same way.
+
+**Windows / macOS:** `decrypt` and `patch` work as-is (they only read and
+write files). `identify` and `flash` additionally need libusb installed
+(Windows: the libusb-1.0.dll from <https://libusb.info>, placed next to
+the script or on PATH) and the tablet's USB devices bound to WinUSB with
+[Zadig](https://zadig.akeo.ie) — once for the tablet
+(`256C:006D`) and once for the bootloader (`0416:3F00`, which appears
+while replugging during the flash). This path is untested; Linux is the
+reference platform.
 
 ## Quick start
 
@@ -58,8 +68,9 @@ not exactly this file.
 
 ```bash
 python3 h1060p.py patch --list     # see all builds
-python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin            # smoothing on
-python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin --raw      # smoothing off
+python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin            # recommended, smoothing on
+python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin --raw      # recommended, smoothing off
+python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin --variant 500hz --raw   # experimental ~500Hz
 ```
 
 The tablet's built-in smoothing (EMA/SMA filters) is **on** by default,
@@ -68,12 +79,15 @@ Both are plain options — pick whichever you prefer.
 
 | Build | Rate | What it is |
 |---|---|---|
-| `release` | ~500Hz | every improvement (default) |
-| `conservative-470` | ~470Hz | gentler sensor wait times |
-| `conservative-420` | ~420Hz | additionally stock math routines |
-| `conservative-380` | ~380Hz | additionally stock coil scan — smallest change from stock |
+| `470hz` | ~470Hz | recommended and default — the highest rate with no observed issues |
+| `500hz` | ~500Hz | experimental — every improvement incl. the shortest sensor waits; has shown stuttering in live use |
+| `420hz` | ~420Hz | additionally stock math routines |
+| `380hz` | ~380Hz | additionally stock coil scan — smallest change from stock |
 
-If `release` ever misbehaves, step down through the conservative builds.
+The default (and what the plain commands above build) is `470hz`.
+`500hz` is the experimental fastest build — try it with `--variant 500hz`
+and reflash the default if it stutters. The 420hz and 380hz builds step
+further toward stock behavior, for troubleshooting.
 The patcher verifies every patch location against the expected stock bytes
 and checks the finished image against the known-good reference build before
 saving — it cannot silently produce something else.
@@ -81,7 +95,7 @@ saving — it cannot silently produce something else.
 ### 5. Flash it
 
 ```bash
-sudo python3 h1060p.py flash dec_T167_190325_release-raw.bin
+sudo python3 h1060p.py flash dec_T167_190325_470hz-raw.bin
 ```
 
 The flash command reboots the tablet into the NuMicro LDROM bootloader over
@@ -96,7 +110,8 @@ python3 h1060p.py identify   # still HUION_T167_190325
 ```
 
 Check the report rate in OpenTabletDriver (tablet → troubleshooting →
-rate) or any tablet rate tool: ~500 Hz with the pen hovering.
+rate) or any tablet rate tool: ~470 Hz with the pen hovering
+(~500 Hz on the experimental build).
 
 ## Rollback
 
@@ -139,9 +154,10 @@ modified and stays available at every replug — the same path the official
 updater uses. Worst case, reflash the stock image.
 
 **Why not 1000 Hz?** The scan is real physics: ~15 resonant measurements per
-report, each a burst of pulses plus settling time. ~500 Hz is the highest
-rate with no measurable quality loss; the absolute ceiling of this sensing
-architecture is around ~700 Hz with signal-quality trade-offs.
+report, each a burst of pulses plus settling time. ~470 Hz is the highest
+rate with no observed issues (the experimental build reaches ~500 Hz);
+the absolute ceiling of this sensing architecture is around ~700 Hz with
+signal-quality trade-offs.
 
 **Does the driver matter?** Use OpenTabletDriver for the best result. The
 stock smoothing removal (`--raw`) means positions reach the PC exactly as

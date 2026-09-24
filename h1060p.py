@@ -2,15 +2,16 @@
 """Huion H1060P (board T167, firmware 190325) unlock tool.
 
 One script for the whole workflow: identify the tablet, decrypt the
-official firmware image, patch it for a higher report rate (~500 reports
-per second instead of the stock ~231), and flash it.
+official firmware image, patch it for a higher report rate (~470 reports
+per second instead of the stock ~231; an experimental ~500Hz build is
+available too), and flash it.
 
 Typical end-to-end run:
 
     python3 h1060p.py identify
     python3 h1060p.py decrypt H1060P_HUION_T167_190325.bin
     python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin --raw
-    sudo python3 h1060p.py flash dec_T167_190325_release-raw.bin
+    sudo python3 h1060p.py flash dec_T167_190325_470hz-raw.bin
 
 The stock firmware can be flashed back the same way at any time (see
 https://github.com/Matthias-VdC/H1060P_T167_RE for the download link).
@@ -53,8 +54,26 @@ LIBUSB_ERROR_PIPE = -9  # descriptor index does not exist on the device
 # USB plumbing (shared)
 # ===========================================================================
 def load_libusb():
-    """Return a ctypes handle to libusb with the prototypes we need."""
-    lib = ctypes.CDLL("libusb-1.0.so.0")
+    """Return a ctypes handle to libusb with the prototypes we need.
+
+    Tries the library name of each platform: Linux ships libusb-1.0.so.0,
+    Windows libusb-1.0.dll (from libusb.info), macOS libusb-1.0.0.dylib.
+    """
+    lib = None
+    last_error = None
+    for name in ("libusb-1.0.so.0", "libusb-1.0.so", "libusb-1.0.dll",
+                 "libusb-1.0.0.dylib"):
+        try:
+            lib = ctypes.CDLL(name)
+            break
+        except OSError as error:
+            last_error = error
+    if lib is None:
+        raise RuntimeError(
+            "libusb-1.0 not found. On Windows, download the libusb "
+            "binaries from https://libusb.info and place libusb-1.0.dll "
+            "next to this script or on PATH. "
+            f"({last_error})")
     lib.libusb_init.argtypes = [ctypes.c_void_p]
     lib.libusb_init.restype = ctypes.c_int
     lib.libusb_open_device_with_vid_pid.argtypes = [
@@ -88,6 +107,9 @@ def open_device(lib, vendor_id, product_id, detach_kernel_driver=False):
     handle = ctypes.c_void_p(handle)
     if detach_kernel_driver:
         try:
+            # Linux only; on other platforms the call reports
+            # NOT_SUPPORTED and we rely on the device being claimable
+            # (on Windows, bound to WinUSB — see README).
             if lib.libusb_kernel_driver_active(handle, 0) == 1:
                 lib.libusb_detach_kernel_driver(handle, 0)
             if lib.libusb_claim_interface(handle, 0) != 0:
@@ -338,16 +360,35 @@ RAW_PATCHES = [
     "bypass_long_moving_average",
 ]
 
-# The recommended build includes every improvement; each conservative
-# build steps one back toward stock behavior, for troubleshooting.
-# "md5" is the reference checksum with smoothing ON (default);
-# "md5_raw" is the reference checksum with --raw.
+# Builds are named by their report rate. 470hz is the recommended
+# default; 500hz is the experimental fastest build; 420hz and 380hz step
+# back toward stock behavior, for troubleshooting. "md5" is the reference
+# checksum with smoothing ON (default); "md5_raw" is the reference
+# checksum with --raw.
 BUILDS = {
-    "release": {
+    "470hz": {
+        "rate": "~470Hz",
+        "desc": "RECOMMENDED (default). The same feature set with longer, "
+                "more cautious sensor wait times — the highest rate with "
+                "no observed issues.",
+        "md5": "6176bde35f533c146915f31cb5381362",
+        "md5_raw": "8b2231dff89596200adccba8254d1d3b",
+        "patches": [
+            "settle_adc_wake_6", "settle_mux_32", "settle_ringdown_40",
+            "remove_tilt_x", "remove_tilt_y",
+            "remove_remeasure_normal_pressure",
+            "x_window_read_five_coils", "x_window_clear_unused_slot",
+            "y_window_read_five_coils", "y_window_clear_unused_slot",
+            "x_window_data_location_check", "y_window_data_location_check",
+            "fast_64bit_multiply", "fast_64bit_divide",
+            "fast_32bit_divide", "fast_64bit_halve",
+        ],
+    },
+    "500hz": {
         "rate": "~500Hz",
-        "desc": "RECOMMENDED. Every improvement: tilt calculation removed, "
-                "redundant re-measures removed, 5-coil window scan, "
-                "rewritten math, shortest proven-safe sensor waits.",
+        "desc": "EXPERIMENTAL. Every improvement including the shortest "
+                "sensor waits — the fastest build, but it has shown "
+                "stuttering in live use. If it misbehaves, flash 470hz.",
         "md5": "07e3834605f7f57a5f593f4b789f8c92",
         "md5_raw": "229be243cf5fbf069c8c17ff57102e91",
         "patches": [
@@ -362,24 +403,7 @@ BUILDS = {
             "fast_32bit_divide", "fast_64bit_halve",
         ],
     },
-    "conservative-470": {
-        "rate": "~470Hz",
-        "desc": "The same feature set but with more conservative sensor "
-                "wait times. Try this if 'release' ever misbehaves.",
-        "md5": "6176bde35f533c146915f31cb5381362",
-        "md5_raw": "8b2231dff89596200adccba8254d1d3b",
-        "patches": [
-            "settle_adc_wake_6", "settle_mux_32", "settle_ringdown_40",
-            "remove_tilt_x", "remove_tilt_y",
-            "remove_remeasure_normal_pressure",
-            "x_window_read_five_coils", "x_window_clear_unused_slot",
-            "y_window_read_five_coils", "y_window_clear_unused_slot",
-            "x_window_data_location_check", "y_window_data_location_check",
-            "fast_64bit_multiply", "fast_64bit_divide",
-            "fast_32bit_divide", "fast_64bit_halve",
-        ],
-    },
-    "conservative-420": {
+    "420hz": {
         "rate": "~420Hz",
         "desc": "Additionally keeps the original (slow) math routines.",
         "md5": "7bbb51e0e25895a9ca973526c5ae6d3d",
@@ -393,7 +417,7 @@ BUILDS = {
             "x_window_data_location_check", "y_window_data_location_check",
         ],
     },
-    "conservative-380": {
+    "380hz": {
         "rate": "~380Hz",
         "desc": "Additionally keeps the original 6-coil window scan — "
                 "the smallest step away from stock behavior.",
@@ -442,11 +466,10 @@ def apply_patches(stock, patch_names):
 
 
 def print_build_list():
-    print("Available builds (fastest first). Hardware input smoothing "
-          "is ON by default in every build;\nadd --raw to disable it "
-          "(unfiltered pen input):\n")
-    for name in ("release", "conservative-470",
-                 "conservative-420", "conservative-380"):
+    print("Available builds (default and recommended: 470hz). "
+          "Hardware input smoothing\nis ON by default in every build; add "
+          "--raw to disable it (unfiltered pen input):\n")
+    for name in ("470hz", "500hz", "420hz", "380hz"):
         build = BUILDS[name]
         print(f"  {name:18} {build['rate']:8} {build['desc']}")
 
@@ -664,13 +687,15 @@ def main():
     p_patch = sub.add_parser(
         "patch", help="patch a decrypted stock image "
                       "(smoothing ON by default)")
-    p_patch.add_argument("image", help="the decrypted stock image")
+    p_patch.add_argument("image", nargs="?",
+                         help="the decrypted stock image")
     p_patch.add_argument("-o", "--output",
                          help="output path (default: "
                               "dec_T167_190325_<variant>[-raw].bin)")
-    p_patch.add_argument("--variant", default="release",
+    p_patch.add_argument("--variant", default="470hz",
                          choices=sorted(BUILDS),
-                         help="which build to make (default: release)")
+                         help="which build to make (default: 470hz; "
+                              "'500hz' is the experimental fastest build)")
     p_patch.add_argument("--raw", action="store_true",
                          help="disable the hardware input smoothing for "
                               "unfiltered pen input")
@@ -691,6 +716,8 @@ def main():
     elif args.command == "patch":
         if args.list:
             print_build_list()
+        elif not args.image:
+            p_patch.error("provide the stock image path (or --list)")
         else:
             patch(args.image, args.variant, args.raw, args.output)
     elif args.command == "flash":
