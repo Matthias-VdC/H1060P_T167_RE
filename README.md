@@ -123,6 +123,15 @@ Reflash the stock image the same way — you already have it from step 3:
 sudo python3 h1060p.py flash dec_H1060P_HUION_T167_190325.bin
 ```
 
+## Documentation
+
+- `docs/HARDWARE.md` — how the tablet works: memory map, peripherals,
+  sensing architecture, report pipeline, performance physics
+- `docs/FLASHING.md` — the bootloader flashing protocol, packet by
+  packet, and why flashing is always recoverable
+- `docs/PATCHES.md` — every patch with its firmware context, the exact
+  change, and the evidence that it is safe
+
 ## What the patches do (short version)
 
 Each report cycle the tablet locates the pen with a resonant scan: it

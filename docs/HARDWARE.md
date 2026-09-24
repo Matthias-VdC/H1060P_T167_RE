@@ -12,7 +12,7 @@ Addresses are flash (0x0800xxxx) or RAM (0x2000xxxx).
 | MCU | Nuvoton NuMicro NUC100/120 family — ARM Cortex-M0 @ 48 MHz |
 | Flash (APROM) | mapped at 0x08000000, image 25304 bytes |
 | Bootloader (LDROM) | NuMicro ISP at 0x00100000, appears as USB 0416:3F00 while flashing |
-| RAM | ~3.3 KB used (0x20000000–0x20000C70); initial SP = 0x20000C70 |
+| RAM | ~3.1 KB used (0x20000000–0x20000C70); initial SP = 0x20000C70 |
 | USB | full-speed device, VID 256C PID 006D; model string "HUION_T167_190325" on string descriptor 201 |
 | Toolchain (vendor) | Keil/ARMCC, C library scatter-loading |
 | Sensor | EMR resonant digitizer (MCU drives coils, measures the pen's resonant response) |
@@ -34,7 +34,7 @@ pointer — a tidy consistency proof of the layout.
 | Address | Contents |
 |---|---|
 | 0x20000004 | SysTick tick scale (22 HCLK ticks per delay unit) |
-| 0x200002F0 | band calibration table: 12 entries `{pad, u32}`, values 452,830 … 545,455 (these are drive frequencies, ~452–545 kHz) |
+| 0x200002F0 | band calibration table: 12 entries `{pad, u32}`; entries 1–10 hold the band drive frequencies 452,830–545,455 Hz, entries 0 and 11 are zero sentinels |
 | 0x200005CC | pen tracking state struct (below) |
 | 0x20000678 | X-axis scan buffer (5 u32 window values) |
 | 0x20000698 | Y-axis scan buffer |
