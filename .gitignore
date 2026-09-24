@@ -1,7 +1,6 @@
 *
-
 # whitelist
 !.gitignore
-!model.py
-!patch_fw.py
 !LICENSE
+!README.md
+!h1060p.py
