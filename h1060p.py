@@ -4,7 +4,9 @@
 One script for the whole workflow: identify the tablet, decrypt the
 official firmware image, patch it for a higher report rate (~730 reports
 per second instead of the stock ~231; ~470Hz and ~560Hz builds are
-available too), and flash it.
+available too), and flash it. "probe" is a read-only check of the
+bootloader for any tablet (also useful on models this tool refuses to
+patch).
 
 Typical end-to-end run:
 
@@ -1050,6 +1052,63 @@ def flash(path):
     return 0
 
 
+def probe():
+    """Read-only interrogation of the bootloader: firmware version, chip
+    device id and flash config words. Nothing is written; the session ends
+    with CMD_RUN_APROM so the tablet boots back into its pen firmware.
+    Useful to check what a non-T167 tablet actually is before any talk of
+    flashing it."""
+    device = WindowsHidBootloader() if WINDOWS else LibusbBootloader()
+    print("waiting for LDROM 0416:3f00 ... UNPLUG AND REPLUG THE TABLET NOW")
+    if WINDOWS:
+        print("  (if the tablet just starts up normally, replug it again: "
+              "the first time,\n  Windows may still be installing the "
+              "bootloader's driver)")
+    if not device.wait_and_open(60):
+        sys.exit("no bootloader appeared within 60s - aborting. If your "
+                 "tablet is not a T167-generation H1060P, its bootloader "
+                 "may use different USB ids.")
+    try:
+        def talk(hex_packet, expect_ack):
+            device.send(bytes.fromhex(hex_packet))
+            ack = device.receive()
+            got = int.from_bytes(ack[4:8], "little")
+            if got != expect_ack:
+                sys.exit(f"unexpected ACK counter {got} (expected "
+                         f"{expect_ack}): {ack.hex()}")
+            return ack
+
+        # connect, sync packet counter, get version, get device id,
+        # read config - the read-only part of the update handshake.
+        talk(HANDSHAKE[0], HANDSHAKE_ACK_PACKETS[0])
+        talk(HANDSHAKE[1], HANDSHAKE_ACK_PACKETS[1])
+        version = talk(HANDSHAKE[2], HANDSHAKE_ACK_PACKETS[2])
+        device_id = talk(HANDSHAKE[3], HANDSHAKE_ACK_PACKETS[3])
+        config = talk(HANDSHAKE[4], HANDSHAKE_ACK_PACKETS[4])
+
+        pdid = int.from_bytes(device_id[8:12], "little")
+        words = [int.from_bytes(config[8 + 4 * i: 12 + 4 * i], "little")
+                 for i in range(4)]
+        print("bootloader: NuMicro LDROM ISP, responding")
+        print(f"LDROM firmware version: {version[8]}")
+        print(f"chip device id (PDID): 0x{pdid:08x}")
+        print("config words: " + " ".join(f"0x{w:08x}" for w in words))
+        print(f"raw version ack:   {version.hex()}")
+        print(f"raw deviceid ack:  {device_id.hex()}")
+        print(f"raw config ack:    {config.hex()}")
+
+        # reboot into the pen firmware (ack may not come: the bootloader
+        # can reset before answering)
+        try:
+            talk("ab000000" "09000000" + "00" * 56, 10)
+        except (RuntimeError, SystemExit):
+            pass
+        print("tablet told to reboot into its pen firmware "
+              "(if it stays dark, unplug and replug it)")
+    finally:
+        device.close()
+
+
 # ===========================================================================
 # command line
 # ===========================================================================
@@ -1066,6 +1125,10 @@ def main():
 
     sub.add_parser("identify",
                    help="read the tablet's model id (e.g. HUION_T167_190325)")
+    sub.add_parser("probe",
+                   help="read-only: ask the bootloader its version, chip id "
+                        "and flash config (safe on any tablet that shows "
+                        "the 0416:3f00 bootloader)")
 
     p_decrypt = sub.add_parser(
         "decrypt", help="decrypt an official firmware image "
@@ -1106,6 +1169,8 @@ def main():
 
     if args.command == "identify":
         identify()
+    elif args.command == "probe":
+        probe()
     elif args.command == "decrypt":
         decrypt(args.image)
     elif args.command == "patch":
