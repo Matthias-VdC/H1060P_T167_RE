@@ -2,8 +2,8 @@
 """Huion H1060P (board T167, firmware 190325) unlock tool.
 
 One script for the whole workflow: identify the tablet, decrypt the
-official firmware image, patch it for a higher report rate (~470 reports
-per second instead of the stock ~231; an experimental ~500Hz build is
+official firmware image, patch it for a higher report rate (~730 reports
+per second instead of the stock ~231; ~470Hz and ~560Hz builds are
 available too), and flash it.
 
 Typical end-to-end run:
@@ -11,7 +11,7 @@ Typical end-to-end run:
     python3 h1060p.py identify
     python3 h1060p.py decrypt H1060P_HUION_T167_190325.bin
     python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin --raw
-    sudo python3 h1060p.py flash dec_T167_190325_470hz-raw.bin
+    sudo python3 h1060p.py flash dec_T167_190325_730hz-raw.bin
 
 On Windows, run the same steps as "python h1060p.py ..." (no sudo).
 
@@ -20,7 +20,8 @@ https://github.com/Matthias-VdC/H1060P_T167_RE for the download link).
 
 The tablet's built-in input smoothing stays ON in every build, like the
 original firmware; add --raw to the patch step for completely
-unfiltered pen input.
+unfiltered pen input. With the default 730hz build, --no-taps
+additionally makes the pen never register a click (keyboard players).
 
 This tool contains no Huion firmware bytes, only patch descriptions.
 Requires Python 3, plus libusb on Linux; on Windows it talks to the
@@ -527,6 +528,48 @@ PATCHES = {
     "usb_poll_every_1ms_aux": (
         0x59BC, "02", "01",
         "default-mode endpoint (EP 0x82) host polling: 2 ms -> 1 ms"),
+
+    # --- pressure tracker period (730hz build) ---------------------------
+    # Besides the position scan, every cycle re-runs a 5-reading scan
+    # that tracks the pen's resonance band — this is what produces
+    # pressure and detects pen contact. The stock firmware already
+    # counts cycles in a flag that wraps every 2 cycles; raising the
+    # wrap constant makes the band tracker run every Nth cycle instead.
+    # Position still updates every cycle (position is measured by a
+    # separate coil scan); pressure/contact refresh at rate/N and pen
+    # clicks gain up to N-1 cycles (~20 ms at 730Hz, period 15) of
+    # extra latency — aimed at players who click with a keyboard.
+    # The band state also selects the excitation used by the position
+    # scan, so the period must stay short enough to follow hover-height
+    # changes; 15 was verified usable, 100 degraded menu interaction.
+    "tracker_period_15": (
+        0x1F10, "0128", "0e28",
+        "band tracker wrap: every 2nd cycle -> every 15th cycle"),
+    # The scan step's call to the band tracker is redirected through a
+    # short flag check placed in a dead code area (the tilt calculation
+    # this tool removes): run the tracker only when the cycle counter
+    # wrapped to 0, otherwise return immediately.
+    "tracker_call_redirect": (
+        0x1F1E, "02f0d9f8", "01f0c7ff",
+        "band tracker call -> routed through the skip check below"),
+    "tracker_skip_check": (
+        0x3EB0, "384800683849886036484068", "034b1b78002b00d070470be1",
+        "skip check: run the band tracker only when the counter is 0"),
+    "tracker_skip_check_flag_address": (
+        0x3EC0, "80680861", "e4020020",
+        "skip check: point at the stock cycle counter"),
+
+    # --- pen contact disabled (--no-taps, 730hz build) --------------------
+    # The report builder clamps pressure to a maximum stored in flash at
+    # 0x34BC (0x1FFF), on both pressure paths (normal and light touch).
+    # Zeroing that constant makes pressure report 0 unconditionally, so
+    # pen contact never registers as a click — useful to make accidental
+    # touches harmless. Firmware-internal pressure tracking still runs
+    # (the band state must stay fresh for the position scan); this is
+    # an output-only change with no effect on rate or position.
+    "pen_contact_disabled": (
+        0x34BC, "ff1f0000", "00000000",
+        "pressure clamp maximum: 0x1FFF -> 0 (pen never reports a click)"),
 }
 
 # Applied only with --raw (hardware smoothing OFF).
@@ -536,17 +579,47 @@ RAW_PATCHES = [
     "bypass_long_moving_average",
 ]
 
-# Builds are named by their report rate. 470hz is the recommended
-# default; 500hz is the experimental fastest build; 420hz and 380hz step
-# back toward stock behavior, for troubleshooting. "md5" is the reference
-# checksum with smoothing ON (default); "md5_raw" is the reference
-# checksum with --raw.
+# Builds are named by their report rate. 730hz is the default (the
+# fastest build on the proven-safe sensor waits, with the pressure
+# tracker slowed to every 15th cycle — for keyboard-clicking players);
+# 470hz is the fallback with no pen-input trade-offs; 500hz is the
+# experimental shortest-waits build; 420hz and 380hz step back toward
+# stock behavior, for troubleshooting. "md5" is the reference checksum
+# with smoothing ON (default); "md5_raw" with --raw; the "notap"
+# checksums additionally disable pen contact (--no-taps).
 BUILDS = {
+    "730hz": {
+        "rate": "~730Hz",
+        "desc": "DEFAULT. The fastest build on the proven-safe sensor "
+                "waits; the pressure tracker runs every 15th cycle, so "
+                "pen clicks gain up to ~20 ms latency and pressure "
+                "updates ~49 times/s — for players who click with a "
+                "keyboard. Pen-clickers should use 470hz instead.",
+        "md5": "2aa4b30c435d9b2d7c7aaec183b7f234",
+        "md5_raw": "3f5827e0d43d50ebb19dbc5c2f360526",
+        "md5_notap": "78d44c82e00c38da2bcfb8ea717650ea",
+        "md5_notap_raw": "bb5a10e2d09af4ee15b812bacf21c59d",
+        "patches": [
+            "settle_adc_wake_6", "settle_mux_32", "settle_ringdown_40",
+            "remove_tilt_x", "remove_tilt_y",
+            "remove_remeasure_normal_pressure",
+            "remove_remeasure_light_touch",
+            "x_window_read_five_coils", "x_window_clear_unused_slot",
+            "y_window_read_five_coils", "y_window_clear_unused_slot",
+            "x_window_data_location_check", "y_window_data_location_check",
+            "fast_64bit_multiply", "fast_64bit_divide",
+            "fast_32bit_divide", "fast_64bit_halve",
+            "usb_poll_every_1ms", "usb_poll_every_1ms_aux",
+            "tracker_period_15", "tracker_call_redirect",
+            "tracker_skip_check", "tracker_skip_check_flag_address",
+        ],
+    },
     "470hz": {
         "rate": "~470Hz",
-        "desc": "RECOMMENDED (default). The same feature set with longer, "
-                "more cautious sensor wait times — the highest rate with "
-                "no observed issues, and no rate dip while tapping.",
+        "desc": "The fallback with no pen-input trade-offs: pressure "
+                "tracking every cycle, immediate tap detection — pick "
+                "this if you click with the pen. Long clean live "
+                "history, and no rate dip while tapping.",
         "md5": "44490905fc8bc3f8266c49e5afa80c29",
         "md5_raw": "a1cc3b72402d490cc755de4f7571b39a",
         "patches": [
@@ -563,7 +636,7 @@ BUILDS = {
         ],
     },
     "500hz": {
-        "rate": "~500Hz",
+        "rate": "~560Hz",
         "desc": "EXPERIMENTAL. Every improvement including the shortest "
                 "sensor waits — the fastest build. Its earlier stutter "
                 "traced to the USB 2 ms polling cap (reports produced "
@@ -650,24 +723,34 @@ def apply_patches(stock, patch_names):
 
 
 def print_build_list():
-    print("Available builds (default and recommended: 470hz). "
+    print("Available builds (default: 730hz). "
           "Hardware input smoothing\nis ON by default in every build; add "
-          "--raw to disable it (unfiltered pen input):\n")
-    for name in ("470hz", "500hz", "420hz", "380hz"):
+          "--raw to disable it (unfiltered pen input).\n"
+          "With 730hz only, --no-taps additionally disables pen contact "
+          "(never\nregister a click):\n")
+    for name in ("730hz", "470hz", "500hz", "420hz", "380hz"):
         build = BUILDS[name]
         print(f"  {name:18} {build['rate']:8} {build['desc']}")
 
 
-def patch(path, variant, raw, output):
+def patch(path, variant, raw, no_taps, output):
     build = BUILDS[variant]
+    if no_taps and "md5_notap" not in build:
+        sys.exit("ABORT: --no-taps is only available with the 730hz build.")
     stock = load_stock(path)
 
     patches = list(build["patches"])
     if raw:
         patches += RAW_PATCHES
+    if no_taps:
+        patches.append("pen_contact_disabled")
     image = apply_patches(stock, patches)
 
-    expected_md5 = build["md5_raw"] if raw else build["md5"]
+    if no_taps:
+        key = "md5_notap_raw" if raw else "md5_notap"
+    else:
+        key = "md5_raw" if raw else "md5"
+    expected_md5 = build[key]
     image_md5 = hashlib.md5(image).hexdigest()
     if image_md5 != expected_md5:
         sys.exit(f"ABORT: built image md5 {image_md5} does not match the "
@@ -675,6 +758,7 @@ def patch(path, variant, raw, output):
                  f"report this bug.")
 
     suffix = "-raw" if raw else ""
+    suffix += "-notap" if no_taps else ""
     output = output or f"dec_T167_190325_{variant}{suffix}.bin"
     with open(output, "wb") as f:
         f.write(image)
@@ -997,13 +1081,20 @@ def main():
     p_patch.add_argument("-o", "--output",
                          help="output path (default: "
                               "dec_T167_190325_<variant>[-raw].bin)")
-    p_patch.add_argument("--variant", default="470hz",
+    p_patch.add_argument("--variant", default="730hz",
                          choices=sorted(BUILDS),
-                         help="which build to make (default: 470hz; "
-                              "'500hz' is the experimental fastest build)")
+                         help="which build to make (default: 730hz, the "
+                              "fastest for keyboard-clicking players; "
+                              "'470hz' keeps full pen-pressure tracking; "
+                              "'500hz' is the experimental shortest-waits "
+                              "build)")
     p_patch.add_argument("--raw", action="store_true",
                          help="disable the hardware input smoothing for "
                               "unfiltered pen input")
+    p_patch.add_argument("--no-taps", action="store_true",
+                         help="additionally disable pen contact: pressure "
+                              "always reports 0, so the pen never "
+                              "registers a click (730hz build only)")
     p_patch.add_argument("--list", action="store_true",
                          help="list the available builds")
 
@@ -1024,7 +1115,8 @@ def main():
         elif not args.image:
             p_patch.error("provide the stock image path (or --list)")
         else:
-            patch(args.image, args.variant, args.raw, args.output)
+            patch(args.image, args.variant, args.raw, args.no_taps,
+                  args.output)
     elif args.command == "flash":
         sys.exit(flash(args.image))
 

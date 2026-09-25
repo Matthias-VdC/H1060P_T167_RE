@@ -152,16 +152,31 @@ Rate is bounded by real analog work, in this order:
   same µs range); pushing below ~1–7 µs produced visible stutter here
 - ADC conversion ~1.7 µs per read, math and report logic ~0.1 ms
 
-Stock: 21 measurements ≈ 4.33 ms ≈ 231 Hz. Patched: 15 measurements ≈
-2.1 ms ≈ 470 Hz (a ~500 Hz variant exists). The stock-code ceiling is
-roughly 700–800 Hz (needs a burst cut). Delivery: the stock pen
-endpoint asks the host to poll only every 2 ms (bInterval = 2, capping
-delivery at 500 reports/s with ~1 ms average extra latency, and —
+Stock: 21 measurements ≈ 4.33 ms ≈ 231 Hz. Measured ladder of the
+patched builds (with 1 ms USB polling): 380 / 420 / 470 Hz with the
+pressure tracker every cycle (15 measurements ≈ 2.1 ms at 470), 560 Hz
+with shorter waits, then 580 / 720 / ~730 Hz as the tracker slows to
+every 2nd / 10th / 15th cycle (~10.3 measurements average). The
+absolute ceiling of this architecture is ~750 Hz: the 10 position
+measurements per cycle are irreducible without shrinking the coil
+window or cutting the excitation burst (both SNR trades). Delivery:
+the stock pen endpoint asks the host to poll only every 2 ms
+(bInterval = 2, capping delivery at 500 reports/s with ~1 ms average
+extra latency, and —
 since the report sender drops a report when the previous one is still
 uncollected — injecting stale reports whenever the scan outpaces
 collection); every patched build changes this to the full-speed norm of
 1 ms. 1000 Hz itself requires a purpose-built acquisition cycle, not
 patching.
+
+One architectural coupling worth knowing: the band state maintained
+by the pressure tracker is also what the position scan uses to pick
+the coil excitation (the Y helper at 0x080055D4 loads it from
+0x20000668 before every burst). The tracker can be slowed for rate,
+but not removed: with it disabled the band freezes and position
+signal degrades after any hover-height change. Period 15 keeps the
+band fresh enough to follow height changes while costing only ~0.3
+measurements per cycle.
 
 ## Provenance and scope
 

@@ -22,6 +22,8 @@ reproduced.
 | position window | 4 (+2 asserts) | one fewer coil read per axis per cycle |
 | math runtime | 4 | ~6x faster pressure interpolation, bit-exact |
 | USB report polling | 2 | host collects every 1 ms instead of every 2 ms |
+| pressure tracker period | 4 | tracker runs every 15th cycle (`730hz` build) |
+| pen contact disable | 1 | pressure always reports 0 (`--no-taps`) |
 
 Total footprint vs stock: about 210 bytes changed, most of it inside the
 four replaced math routines. Everything is reversible by reflashing the
@@ -223,6 +225,64 @@ vendor nothing but battery on the host side). Delivery latency halves
 on average, worst case drops from 2 ms to 1 ms, and no report below
 1000 Hz can be dropped anymore. Applied in every build.
 
+## 8. Pressure tracker period (`730hz` build)
+
+**Firmware context.** Besides the position scan (10 coil reads per
+cycle), every cycle the firmware re-runs a 5-reading scan that tracks
+the pen's resonance band — this is what produces pressure and detects
+pen contact. Two facts matter:
+
+- The stock firmware already counts cycles for this purpose: a flag
+  incremented at the top of the tracking loop wraps to 0 when it
+  exceeds 1, so it alternates 0/1/0/1 (the stock tilt extras read it
+  to alternate their own scans).
+- The band state is also consumed by the position scan — coil
+  excitation uses the currently tracked band — so the tracker can be
+  slowed but must keep running.
+
+**Change.** Four sites, one of them a single byte:
+
+```asm
+0x1F10:  cmp r0, #1  ->  cmp r0, #14  ; wrap every 15th cycle, not 2nd
+0x1F1E:  bl  <tracker>                ->  bl  <skip check>   (redirect)
+0x3EB0:  (dead tilt code)             ->  read flag; if != 0 return,
+                                        else tail-call tracker
+0x3EC0:  (literal)                    ->  flag address 0x200002E4
+```
+
+The skip check lives in the tilt-calculation code area this tool
+already stubs off, so it costs no extra flash. Position still updates
+every cycle; pressure and pen contact refresh every 15th cycle
+(~49 Hz at the resulting ~730 Hz report rate), and a pen click can
+register up to ~14 cycles (~20 ms) late.
+
+**Why it is safe.** The position scan is untouched and runs every
+cycle. Measured: 470 Hz (every cycle) → 580 Hz (every 2nd) → 720 Hz
+(every 10th, live-verified) → ~730 Hz (every 15th, live-verified
+usable). Period 100 measured ~750 Hz but made pen-driven UI
+interaction unusable and leaves a ~135 ms window of stale excitation
+band after hover-height changes — 15 is the settled default.
+Aimed at players who click with a keyboard; the 470hz build keeps
+full-rate pressure for pen clickers.
+
+## 9. Pen contact disabled (`--no-taps`, `730hz` build)
+
+**Firmware context.** The report builder clamps pressure to a maximum
+stored in flash at 0x34BC (0x1FFF), on both of its pressure paths
+(normal and light-touch ranges).
+
+**Change.** One constant: 0x1FFF -> 0, so pressure always reports 0
+and the pen never registers a click.
+
+```asm
+0x34BC:  1fff -> 0000
+```
+
+**Why it is safe.** Output-only: the pressure/band tracker inside the
+firmware still runs (the position scan needs its band), and position
+reporting is untouched. Accidental pen touches move the cursor but
+never click. No effect on rate.
+
 ---
 
 ## History
@@ -230,8 +290,12 @@ on average, worst case drops from 2 ms to 1 ms, and no report below
 The groups above were built and validated in this order, each live-
 tested before the next: settle delays (231→330 Hz) → smoothing
 options → tilt removal (→380 Hz) → re-measure removal → window shrink
-(→420 Hz) → math runtime (→470 Hz) → deeper settle tuning (→500 Hz,
+(→420 Hz) → math runtime (→470 Hz) → deeper settle tuning (→560 Hz,
 experimental). Later additions: the light-touch re-measure removal
 joined the default build (no more ~350 Hz dip while tapping), and the
 USB 1 ms polling fix landed in every build after the 2 ms cap was
-identified as the cause of the fastest build's stutter.
+identified as the cause of the fastest build's stutter. Finally the
+pressure tracker period was slowed from every 2nd cycle (580 Hz
+measured) through every 10th (720 Hz measured) to every 15th — the
+730hz default, live-verified usable — with `--no-taps` as an optional
+output-only contact disable.

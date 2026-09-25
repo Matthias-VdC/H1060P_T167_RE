@@ -1,8 +1,9 @@
 # H1060P / T167 report-rate unlock
 
 Patches for the Huion H1060P (board **T167**, firmware **190325**) that raise
-the tablet's USB report rate from the stock **~231 Hz** to **~470 Hz** (an
-experimental **~500 Hz** build is also available) and optionally disable the
+the tablet's USB report rate from the stock **~231 Hz** to **~730 Hz** (a
+**~470 Hz** build without pen-input trade-offs, and an experimental
+**~560 Hz** build, are also available) and optionally disable the
 built-in input smoothing — for lower input latency in
 games like osu!.
 
@@ -74,25 +75,32 @@ not exactly this file.
 
 ```bash
 python3 h1060p.py patch --list     # see all builds
-python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin            # recommended, smoothing on
-python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin --raw      # recommended, smoothing off
-python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin --variant 500hz --raw   # experimental ~500Hz
+python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin            # default 730hz, smoothing on
+python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin --raw      # default 730hz, smoothing off
+python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin --raw --no-taps   # also never register a pen click
+python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin --variant 470hz --raw   # full pen-pressure tracking
 ```
 
 The tablet's built-in smoothing (EMA/SMA filters) is **on** by default,
 like stock; `--raw` turns it off for completely unfiltered pen input.
-Both are plain options — pick whichever you prefer.
+Both are plain options — pick whichever you prefer. With the default
+build, `--no-taps` additionally makes the pen never register a click
+(useful for keyboard players; pen pressure always reports 0).
 
 | Build | Rate | What it is |
 |---|---|---|
-| `470hz` | ~470Hz | recommended and default — the highest rate with no observed issues, and no rate dip while tapping |
-| `500hz` | ~500Hz | experimental — every improvement incl. the shortest sensor waits; its earlier stutter traced to the USB 2 ms polling cap, now fixed in all builds |
+| `730hz` | ~730Hz | default — the fastest build on the proven-safe sensor waits; the pressure tracker runs every 15th cycle, so pen clicks gain up to ~20 ms latency and pressure updates ~49 times/s (for keyboard-clicking players) |
+| `470hz` | ~470Hz | no pen-input trade-offs: pressure tracking every cycle, immediate tap detection — pick this if you click with the pen |
+| `500hz` | ~560Hz | experimental — every improvement incl. the shortest sensor waits; its earlier stutter traced to the USB 2 ms polling cap, now fixed in all builds |
 | `420hz` | ~420Hz | additionally stock math routines |
 | `380hz` | ~380Hz | additionally stock coil scan — smallest change from stock |
 
-The default (and what the plain commands above build) is `470hz`.
-`500hz` is the experimental fastest build — try it with `--variant 500hz`
-and reflash the default if it stutters. The 420hz and 380hz builds step
+The default (and what the plain commands above build) is `730hz`: the
+position scan runs every cycle, and the separate pressure/band tracker
+runs every 15th cycle — verified usable in live play; pressure and pen
+contact refresh ~49 times per second, which keyboard players never
+notice. If you click with the pen, use `470hz` instead (or try 730hz
+and fall back). The 420hz and 380hz builds step
 further toward stock behavior, for troubleshooting.
 The patcher verifies every patch location against the expected stock bytes
 and checks the finished image against the known-good reference build before
@@ -101,7 +109,7 @@ saving — it cannot silently produce something else.
 ### 5. Flash it
 
 ```bash
-sudo python3 h1060p.py flash dec_T167_190325_470hz-raw.bin
+sudo python3 h1060p.py flash dec_T167_190325_730hz-raw.bin
 ```
 
 The flash command reboots the tablet into the NuMicro LDROM bootloader over
@@ -121,8 +129,8 @@ python3 h1060p.py identify   # still HUION_T167_190325
 ```
 
 Check the report rate in OpenTabletDriver (tablet → troubleshooting →
-rate) or any tablet rate tool: ~470 Hz with the pen hovering
-(~500 Hz on the experimental build).
+rate) or any tablet rate tool: ~730 Hz with the pen hovering
+(~470 Hz on the 470hz build, ~560 Hz on the experimental one).
 
 ## Rollback
 
@@ -177,11 +185,13 @@ manufacturer's own bootloader protocol and verifies every byte it sends
 modified and stays available at every replug — the same path the official
 updater uses. Worst case, reflash the stock image.
 
-**Why not 1000 Hz?** The scan is real physics: ~15 resonant measurements per
-report, each a burst of pulses plus settling time. ~470 Hz is the highest
-rate with no observed issues (the experimental build reaches ~500 Hz);
-the absolute ceiling of this sensing architecture is around ~700 Hz with
-signal-quality trade-offs. USB delivery used to add more: stock firmware
+**Why not 1000 Hz?** The scan is real physics: each report needs ~10-15
+resonant measurements, each a burst of pulses plus settling time. ~730 Hz
+(the pressure tracker slowed to every 15th cycle) is the highest rate
+verified usable in live play; ~470 Hz keeps full-pressure tracking every
+cycle, and the experimental shortest-waits build reaches ~560 Hz with
+signal-quality trade-offs. The absolute ceiling of this sensing
+architecture is around ~750 Hz. USB delivery used to add more: stock firmware
 asks the PC to collect a report only every 2 ms (capping delivery at
 500 reports/s with ~1 ms average extra latency); every build here changes
 that to the full-speed norm of 1 ms.
