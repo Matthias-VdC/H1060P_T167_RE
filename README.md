@@ -18,18 +18,22 @@ below checks this.
 
 ## Requirements
 
-- Python 3 and libusb (`libusb-1.0`, in every distro's repos)
+- Python 3, plus libusb on Linux (`libusb-1.0`, in every distro's repos)
 - A USB cable, and the willingness to reflash. The flash is reversible: the
   stock firmware can always be flashed back the same way.
 
-**Windows / macOS:** `decrypt` and `patch` work as-is (they only read and
-write files). `identify` and `flash` additionally need libusb installed
-(Windows: the libusb-1.0.dll from <https://libusb.info>, placed next to
-the script or on PATH) and the tablet's USB devices bound to WinUSB with
-[Zadig](https://zadig.akeo.ie) — once for the tablet
-(`256C:006D`) and once for the bootloader (`0416:3F00`, which appears
-while replugging during the flash). This path is untested; Linux is the
-reference platform.
+**Windows:** nothing else to install. The tool talks to the tablet through
+Windows' built-in HID driver, the same way Huion's own updater does: no
+libusb, no Zadig, no administrator rights. Run the commands below as
+`python h1060p.py …` (without `sudo`). If you followed older instructions
+and bound the tablet or its bootloader to WinUSB with Zadig, restore the
+original driver first (Device Manager → the device → Uninstall device,
+deleting its driver, then replug) — the tool cannot see a WinUSB-bound
+device. The Windows path is new: it has been checked under Wine and
+against a simulated bootloader, but not yet on a real Windows machine.
+Linux is the reference platform.
+
+**macOS:** untested (it would go through libusb, like Linux).
 
 ## Quick start
 
@@ -40,8 +44,8 @@ python3 h1060p.py identify
 ```
 
 Must print `HUION_T167_190325`. Anything else (e.g. `HUION_T205_…`) — stop,
-this project is not for your tablet. Reading the string needs USB access;
-run as root if it reports no tablet.
+this project is not for your tablet. On Linux, reading the string needs
+USB access; run as root if it reports no tablet.
 
 ### 2. Download the official firmware
 
@@ -49,7 +53,7 @@ Huion's own update server hosts the stock image:
 
 > **H1060P / T167 / 190325**
 > <http://zyz.huion.cn/api/upload/2019-07-27/701dffc6a15af0230da9783654c98f81.bin>
-> md5 `4cc61c5ce98cd73695c48fe617e23c6`
+> md5 `4cc61c5ce98cd73695c48fe617e23c77`
 
 (Same file the Huion Firmware Update tool fetches.) Save it as
 `H1060P_HUION_T167_190325.bin`.
@@ -104,6 +108,11 @@ The flash command reboots the tablet into the NuMicro LDROM bootloader over
 USB and writes the image. Follow its prompts: it asks you to **unplug and
 replug the tablet** once to enter the bootloader, and once more afterwards
 to boot the new firmware. Takes about two seconds.
+
+On Windows the command is `python h1060p.py flash …`, no admin needed. The
+very first time, Windows may still be installing the bootloader's driver
+when its ~2.5 s window closes and the tablet just starts up normally —
+replug again while the tool is still waiting.
 
 ### 6. Verify
 

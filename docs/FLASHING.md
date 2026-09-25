@@ -26,9 +26,13 @@ bootloader still lets you replace at the next replug.
 ## Transport
 
 HID class device, interface 0, interrupt endpoints: 0x02 (OUT) and
-0x81 (IN), 64-byte packets. On Linux the kernel HID driver must be
-detached from the interface (the tool does this); on Windows the
-device must be bound to WinUSB instead (see README).
+0x81 (IN), 64-byte packets; the report descriptor declares one 64-byte
+input and one 64-byte output report, without report IDs. On Linux the
+kernel HID driver must be detached from the interface (the tool does
+this). On Windows the tool stays on the built-in HID driver, as the
+official updater does: each packet is written and read as a HID report
+(prefixed with report ID 0), which Windows carries over the same two
+interrupt endpoints.
 
 ## Packet format
 

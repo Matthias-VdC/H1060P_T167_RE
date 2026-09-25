@@ -13,6 +13,8 @@ Typical end-to-end run:
     python3 h1060p.py patch dec_H1060P_HUION_T167_190325.bin --raw
     sudo python3 h1060p.py flash dec_T167_190325_470hz-raw.bin
 
+On Windows, run the same steps as "python h1060p.py ..." (no sudo).
+
 The stock firmware can be flashed back the same way at any time (see
 https://github.com/Matthias-VdC/H1060P_T167_RE for the download link).
 
@@ -21,7 +23,9 @@ original firmware; add --raw to the patch step for completely
 unfiltered pen input.
 
 This tool contains no Huion firmware bytes, only patch descriptions.
-Requires Python 3 and libusb. Use at your own risk, on your own device.
+Requires Python 3, plus libusb on Linux; on Windows it talks to the
+tablet through the built-in HID driver, so nothing else is needed. Use
+at your own risk, on your own device.
 """
 
 import argparse
@@ -30,6 +34,9 @@ import hashlib
 import os
 import sys
 import time
+
+# Windows reaches the tablet through its HID driver; elsewhere, libusb.
+WINDOWS = sys.platform == "win32"
 
 STOCK_MD5 = "c918ce0d59b472c6db0d967baedf774d"
 STOCK_SIZE = 25304
@@ -51,18 +58,13 @@ LIBUSB_ERROR_PIPE = -9  # descriptor index does not exist on the device
 
 
 # ===========================================================================
-# USB plumbing (shared)
+# USB plumbing: libusb (Linux)
 # ===========================================================================
 def load_libusb():
-    """Return a ctypes handle to libusb with the prototypes we need.
-
-    Tries the library name of each platform: Linux ships libusb-1.0.so.0,
-    Windows libusb-1.0.dll (from libusb.info), macOS libusb-1.0.0.dylib.
-    """
+    """Return a ctypes handle to libusb with the prototypes we need."""
     lib = None
     last_error = None
-    for name in ("libusb-1.0.so.0", "libusb-1.0.so", "libusb-1.0.dll",
-                 "libusb-1.0.0.dylib"):
+    for name in ("libusb-1.0.so.0", "libusb-1.0.so", "libusb-1.0.0.dylib"):
         try:
             lib = ctypes.CDLL(name)
             break
@@ -70,10 +72,8 @@ def load_libusb():
             last_error = error
     if lib is None:
         raise RuntimeError(
-            "libusb-1.0 not found. On Windows, download the libusb "
-            "binaries from https://libusb.info and place libusb-1.0.dll "
-            "next to this script or on PATH. "
-            f"({last_error})")
+            "libusb-1.0 not found — install it from your distribution's "
+            f"packages ({last_error})")
     lib.libusb_init.argtypes = [ctypes.c_void_p]
     lib.libusb_init.restype = ctypes.c_int
     lib.libusb_open_device_with_vid_pid.argtypes = [
@@ -97,6 +97,14 @@ def load_libusb():
     return lib
 
 
+def init_libusb():
+    """load_libusb(), with libusb_init() done (exits if it fails)."""
+    lib = load_libusb()
+    if lib.libusb_init(None) != 0:
+        sys.exit("libusb_init failed")
+    return lib
+
+
 def open_device(lib, vendor_id, product_id, detach_kernel_driver=False):
     """Open the first USB device with the given ids. Returns a handle
     or None. With detach_kernel_driver, claims interface 0 as well."""
@@ -107,9 +115,8 @@ def open_device(lib, vendor_id, product_id, detach_kernel_driver=False):
     handle = ctypes.c_void_p(handle)
     if detach_kernel_driver:
         try:
-            # Linux only; on other platforms the call reports
-            # NOT_SUPPORTED and we rely on the device being claimable
-            # (on Windows, bound to WinUSB — see README).
+            # The kernel's HID driver owns the interface; unbind it so
+            # we can claim it.
             if lib.libusb_kernel_driver_active(handle, 0) == 1:
                 lib.libusb_detach_kernel_driver(handle, 0)
             if lib.libusb_claim_interface(handle, 0) != 0:
@@ -119,6 +126,128 @@ def open_device(lib, vendor_id, product_id, detach_kernel_driver=False):
             lib.libusb_close(handle)
             return None
     return handle
+
+
+# ===========================================================================
+# USB plumbing: Windows
+# ===========================================================================
+# Both USB identities stay on Windows' built-in HID driver, as with
+# Huion's own updater: no libusb, no Zadig, no administrator rights.
+# Everything here is ctypes on DLLs that ship with Windows.
+GENERIC_READ = 0x80000000
+GENERIC_WRITE = 0x40000000
+FILE_SHARE_READ_WRITE = 0x3
+OPEN_EXISTING = 3
+FILE_FLAG_OVERLAPPED = 0x40000000
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+ERROR_IO_PENDING = 997
+WAIT_OBJECT_0 = 0
+CR_SUCCESS = 0x00
+CR_BUFFER_SMALL = 0x1A
+CM_GET_DEVICE_INTERFACE_LIST_PRESENT = 0x0
+HIDP_STATUS_SUCCESS = 0x00110000
+
+
+class GUID(ctypes.Structure):
+    _fields_ = [("Data1", ctypes.c_uint32), ("Data2", ctypes.c_uint16),
+                ("Data3", ctypes.c_uint16), ("Data4", ctypes.c_uint8 * 8)]
+
+
+class OVERLAPPED(ctypes.Structure):
+    _fields_ = [("Internal", ctypes.c_size_t),
+                ("InternalHigh", ctypes.c_size_t),
+                ("Offset", ctypes.c_uint32), ("OffsetHigh", ctypes.c_uint32),
+                ("hEvent", ctypes.c_void_p)]
+
+
+class HIDP_CAPS(ctypes.Structure):
+    _fields_ = [("Usage", ctypes.c_uint16), ("UsagePage", ctypes.c_uint16),
+                ("InputReportByteLength", ctypes.c_uint16),
+                ("OutputReportByteLength", ctypes.c_uint16),
+                ("FeatureReportByteLength", ctypes.c_uint16),
+                ("Reserved", ctypes.c_uint16 * 17),
+                ("NumberCounts", ctypes.c_uint16 * 10)]  # unused here
+
+
+def load_windows_hid():
+    """Return (kernel32, hid, cfgmgr32) with the prototypes we need."""
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    hid = ctypes.WinDLL("hid", use_last_error=True)
+    cfgmgr32 = ctypes.WinDLL("cfgmgr32", use_last_error=True)
+    handle, dword, ulong = wintypes.HANDLE, wintypes.DWORD, wintypes.ULONG
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, dword, dword, ctypes.c_void_p, dword, dword,
+        handle]
+    kernel32.CreateFileW.restype = handle
+    kernel32.CreateEventW.argtypes = [
+        ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateEventW.restype = handle
+    for function in (kernel32.ReadFile, kernel32.WriteFile):
+        function.argtypes = [handle, ctypes.c_void_p, dword,
+                             ctypes.POINTER(dword),
+                             ctypes.POINTER(OVERLAPPED)]
+        function.restype = wintypes.BOOL
+    kernel32.GetOverlappedResult.argtypes = [
+        handle, ctypes.POINTER(OVERLAPPED), ctypes.POINTER(dword),
+        wintypes.BOOL]
+    kernel32.GetOverlappedResult.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [handle, dword]
+    kernel32.WaitForSingleObject.restype = dword
+    kernel32.CancelIoEx.argtypes = [handle, ctypes.POINTER(OVERLAPPED)]
+    kernel32.CancelIoEx.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [handle]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    hid.HidD_GetHidGuid.argtypes = [ctypes.POINTER(GUID)]
+    hid.HidD_GetHidGuid.restype = None
+    hid.HidD_GetIndexedString.argtypes = [
+        handle, ulong, ctypes.c_void_p, ulong]
+    hid.HidD_GetIndexedString.restype = wintypes.BOOLEAN
+    hid.HidD_GetPreparsedData.argtypes = [
+        handle, ctypes.POINTER(ctypes.c_void_p)]
+    hid.HidD_GetPreparsedData.restype = wintypes.BOOLEAN
+    hid.HidD_FreePreparsedData.argtypes = [ctypes.c_void_p]
+    hid.HidD_FreePreparsedData.restype = wintypes.BOOLEAN
+    hid.HidP_GetCaps.argtypes = [ctypes.c_void_p, ctypes.POINTER(HIDP_CAPS)]
+    hid.HidP_GetCaps.restype = ctypes.c_long  # NTSTATUS
+    cfgmgr32.CM_Get_Device_Interface_List_SizeW.argtypes = [
+        ctypes.POINTER(ulong), ctypes.POINTER(GUID), wintypes.LPCWSTR, ulong]
+    cfgmgr32.CM_Get_Device_Interface_List_SizeW.restype = dword
+    cfgmgr32.CM_Get_Device_Interface_ListW.argtypes = [
+        ctypes.POINTER(GUID), wintypes.LPCWSTR, ctypes.c_wchar_p, ulong,
+        ulong]
+    cfgmgr32.CM_Get_Device_Interface_ListW.restype = dword
+    return kernel32, hid, cfgmgr32
+
+
+def windows_hid_paths(hid, cfgmgr32, vendor_id, product_id):
+    """Device paths of the present HID collections (one per interface
+    or top-level collection) of the USB device with the given ids."""
+    guid = GUID()
+    hid.HidD_GetHidGuid(ctypes.byref(guid))
+    while True:
+        length = ctypes.c_ulong()
+        if cfgmgr32.CM_Get_Device_Interface_List_SizeW(
+                ctypes.byref(length), ctypes.byref(guid), None,
+                CM_GET_DEVICE_INTERFACE_LIST_PRESENT) != CR_SUCCESS:
+            return []
+        paths = ctypes.create_unicode_buffer(length.value)
+        result = cfgmgr32.CM_Get_Device_Interface_ListW(
+            ctypes.byref(guid), None, paths, length.value,
+            CM_GET_DEVICE_INTERFACE_LIST_PRESENT)
+        if result != CR_BUFFER_SMALL:  # a device arrived meanwhile: retry
+            break
+    if result != CR_SUCCESS:
+        return []
+    ids = f"vid_{vendor_id:04x}&pid_{product_id:04x}"
+    return [path for path in paths[:].split("\0") if ids in path.lower()]
+
+
+def windows_open(kernel32, path, access, flags=0):
+    """Open a HID collection by device path. Returns a handle or None."""
+    handle = kernel32.CreateFileW(path, access, FILE_SHARE_READ_WRITE, None,
+                                  OPEN_EXISTING, flags, None)
+    return None if handle in (None, INVALID_HANDLE_VALUE) else handle
 
 
 # ===========================================================================
@@ -142,31 +271,61 @@ def read_string_descriptor(lib, device, index, max_length=255):
     return bytes(buffer[:transferred])
 
 
-def identify():
-    """Print the tablet's model/firmware id (e.g. HUION_T167_190325)."""
-    lib = load_libusb()
-    if lib.libusb_init(None) != 0:
-        sys.exit("libusb_init failed")
+def read_model_libusb():
+    """The tablet's model string via libusb: None if no tablet is
+    present, "" if it has no model descriptor."""
+    lib = init_libusb()
     device = open_device(lib, TABLET_VENDOR_ID, TABLET_PRODUCT_ID)
     if not device:
-        sys.exit(f"no tablet found at {TABLET_VENDOR_ID:04x}:"
-                 f"{TABLET_PRODUCT_ID:04x} — is it plugged in? "
-                 f"(reading descriptors may need root)")
+        return None
     try:
         raw = read_string_descriptor(lib, device, MODEL_STRING_INDEX)
-        if len(raw) < 4:
-            sys.exit("tablet found, but it reports no model descriptor")
-        body = raw[2:]  # skip bLength / bDescriptorType
-        if len(body) % 2:
-            body = body[:-1]
-        model = body.decode("utf-16-le", errors="replace")
-        print(model)
-        if "T167" not in model:
-            print(f"\nWARNING: this is not a T167 board. These patches are "
-                  f"for H1060P/T167 only — do NOT flash a T167 image "
-                  f"to this tablet.", file=sys.stderr)
     finally:
         lib.libusb_close(device)
+    body = raw[2:]  # skip bLength / bDescriptorType
+    if len(body) % 2:
+        body = body[:-1]
+    return body.decode("utf-16-le", errors="replace")
+
+
+def read_model_windows():
+    """The tablet's model string via the Windows HID driver: None if no
+    tablet is present, "" if it has no model descriptor."""
+    kernel32, hid, cfgmgr32 = load_windows_hid()
+    paths = windows_hid_paths(hid, cfgmgr32, TABLET_VENDOR_ID,
+                              TABLET_PRODUCT_ID)
+    if not paths:
+        return None
+    for path in paths:
+        # Access 0 is all a string request needs, and is granted even on
+        # collections the system holds open (the pen, the keys).
+        handle = windows_open(kernel32, path, 0)
+        if handle is None:
+            continue
+        try:
+            model = ctypes.create_unicode_buffer(64)  # the id is 17 chars
+            if hid.HidD_GetIndexedString(handle, MODEL_STRING_INDEX, model,
+                                         ctypes.sizeof(model)):
+                return model.value
+        finally:
+            kernel32.CloseHandle(handle)
+    return ""
+
+
+def identify():
+    """Print the tablet's model/firmware id (e.g. HUION_T167_190325)."""
+    model = read_model_windows() if WINDOWS else read_model_libusb()
+    if model is None:
+        sys.exit(f"no tablet found at {TABLET_VENDOR_ID:04x}:"
+                 f"{TABLET_PRODUCT_ID:04x} — is it plugged in?"
+                 + ("" if WINDOWS else " (reading descriptors may need root)"))
+    if not model:
+        sys.exit("tablet found, but it reports no model descriptor")
+    print(model)
+    if "T167" not in model:
+        print(f"\nWARNING: this is not a T167 board. These patches are "
+              f"for H1060P/T167 only — do NOT flash a T167 image "
+              f"to this tablet.", file=sys.stderr)
 
 
 # ===========================================================================
@@ -499,7 +658,8 @@ def patch(path, variant, raw, output):
           f"(hardware smoothing {'OFF' if raw else 'ON'}): {output}")
     print(f"  {len(patches)} patches applied, output md5 {image_md5} "
           f"(matches the reference build)")
-    print(f"  flash with: sudo python3 {os.path.basename(sys.argv[0])} "
+    run = "python" if WINDOWS else "sudo python3"
+    print(f"  flash with: {run} {os.path.basename(sys.argv[0])} "
           f"flash {output}")
 
 
@@ -561,24 +721,32 @@ def expected_ack(packet_out):
 
 
 class BootloaderDevice:
-    """The tablet's LDROM bootloader (0416:3f00), via libusb."""
-
-    def __init__(self, lib):
-        self.lib = lib
-        self.handle = None
+    """The tablet's LDROM bootloader (0416:3f00). Each platform's
+    subclass below supplies open/send/receive/close."""
 
     def wait_and_open(self, wait_seconds):
         """Wait for the bootloader to appear (it shows for ~2.5s after
         replugging the tablet), then claim it."""
         deadline = time.time() + wait_seconds
         while time.time() < deadline:
-            self.handle = open_device(self.lib, BOOTLOADER_VENDOR_ID,
-                                      BOOTLOADER_PRODUCT_ID,
-                                      detach_kernel_driver=True)
-            if self.handle:
+            if self.open():
                 return True
             time.sleep(0.01)
         return False
+
+
+class LibusbBootloader(BootloaderDevice):
+    """Linux: libusb, on the interrupt endpoints directly."""
+
+    def __init__(self):
+        self.lib = init_libusb()
+        self.handle = None
+
+    def open(self):
+        self.handle = open_device(self.lib, BOOTLOADER_VENDOR_ID,
+                                  BOOTLOADER_PRODUCT_ID,
+                                  detach_kernel_driver=True)
+        return bool(self.handle)
 
     def send(self, data):
         sent = ctypes.c_int()
@@ -607,6 +775,113 @@ class BootloaderDevice:
             self.handle = None
 
 
+class WindowsHidBootloader(BootloaderDevice):
+    """Windows: the HID driver. Each 64-byte packet is one HID report,
+    framed with report id 0 (the bootloader declares none); Windows
+    carries it over the same interrupt endpoints."""
+
+    REPORT_LENGTH = 65  # report id + 64-byte packet
+
+    def __init__(self):
+        self.kernel32, self.hid, self.cfgmgr32 = load_windows_hid()
+        self.handle = None
+        # Manual-reset, as Microsoft recommends for OVERLAPPED events:
+        # ReadFile/WriteFile reset it as each transfer starts, and it
+        # stays set once the transfer completes, so the closing
+        # GetOverlappedResult(bWait=TRUE) in transfer() cannot hang.
+        self.event = self.kernel32.CreateEventW(None, True, False, None)
+        if not self.event:
+            sys.exit(f"CreateEventW failed (Windows error "
+                     f"{ctypes.get_last_error()})")
+
+    def open(self):
+        for path in windows_hid_paths(self.hid, self.cfgmgr32,
+                                      BOOTLOADER_VENDOR_ID,
+                                      BOOTLOADER_PRODUCT_ID):
+            handle = windows_open(self.kernel32, path,
+                                  GENERIC_READ | GENERIC_WRITE,
+                                  FILE_FLAG_OVERLAPPED)
+            if handle is None:
+                continue  # still starting up; the next poll retries
+            lengths = self.report_lengths(handle)
+            if lengths == (self.REPORT_LENGTH, self.REPORT_LENGTH):
+                self.handle = handle
+                return True
+            self.kernel32.CloseHandle(handle)
+            if lengths:
+                sys.exit(f"refusing: the device at 0416:3f00 has "
+                         f"{lengths[0]}/{lengths[1]}-byte HID reports "
+                         f"(in/out), expected {self.REPORT_LENGTH}/"
+                         f"{self.REPORT_LENGTH}. Nothing sent.")
+        return False
+
+    def report_lengths(self, handle):
+        """(input, output) HID report lengths including the report id
+        byte, or None if they cannot be read."""
+        preparsed = ctypes.c_void_p()
+        if not self.hid.HidD_GetPreparsedData(handle,
+                                              ctypes.byref(preparsed)):
+            return None
+        try:
+            caps = HIDP_CAPS()
+            if self.hid.HidP_GetCaps(preparsed, ctypes.byref(caps)) \
+                    != HIDP_STATUS_SUCCESS:
+                return None
+            return caps.InputReportByteLength, caps.OutputReportByteLength
+        finally:
+            self.hid.HidD_FreePreparsedData(preparsed)
+
+    def send(self, data):
+        report = (ctypes.c_ubyte * self.REPORT_LENGTH).from_buffer_copy(
+            bytes(1) + data)
+        sent = self.transfer(self.kernel32.WriteFile, report, "OUT")
+        if sent != self.REPORT_LENGTH:
+            raise RuntimeError(f"OUT transfer failed: sent={sent}")
+
+    def receive(self):
+        report = (ctypes.c_ubyte * self.REPORT_LENGTH)()
+        received = self.transfer(self.kernel32.ReadFile, report, "IN")
+        if received != self.REPORT_LENGTH:
+            raise RuntimeError(f"IN transfer failed: got={received}")
+        return bytes(report[1:])
+
+    def transfer(self, function, report, direction):
+        """One overlapped ReadFile/WriteFile of a whole report, with the
+        same timeout as the libusb transfers. Returns the byte count."""
+        overlapped = OVERLAPPED(hEvent=self.event)
+        timed_out = False
+        if not function(self.handle, report, len(report), None,
+                        ctypes.byref(overlapped)):
+            error = ctypes.get_last_error()
+            if error != ERROR_IO_PENDING:
+                raise RuntimeError(f"{direction} transfer failed: "
+                                   f"Windows error {error}")
+            if self.kernel32.WaitForSingleObject(
+                    self.event, INTERRUPT_TIMEOUT_MS) != WAIT_OBJECT_0:
+                timed_out = True
+                self.kernel32.CancelIoEx(self.handle, ctypes.byref(overlapped))
+        # Always collect the result, cancelled or not: the driver must be
+        # done with report and overlapped before they are freed, and a
+        # transfer that completed just as the timeout hit still counts.
+        count = ctypes.c_ulong()
+        if not self.kernel32.GetOverlappedResult(
+                self.handle, ctypes.byref(overlapped), ctypes.byref(count),
+                True):
+            if timed_out:
+                raise RuntimeError(f"{direction} transfer timed out")
+            raise RuntimeError(f"{direction} transfer failed: "
+                               f"Windows error {ctypes.get_last_error()}")
+        return count.value
+
+    def close(self):
+        if self.handle:
+            self.kernel32.CloseHandle(self.handle)
+            self.handle = None
+        if self.event:
+            self.kernel32.CloseHandle(self.event)
+            self.event = None
+
+
 def flash(path):
     image = open(path, "rb").read()
     if len(image) != STOCK_SIZE:
@@ -620,11 +895,12 @@ def flash(path):
     print(f"{len(packets)} packets to send "
           f"({len(packets) - len(HANDSHAKE) - 1} data)")
 
-    lib = load_libusb()
-    if lib.libusb_init(None) != 0:
-        sys.exit("libusb_init failed")
-    device = BootloaderDevice(lib)
+    device = WindowsHidBootloader() if WINDOWS else LibusbBootloader()
     print("waiting for LDROM 0416:3f00 ... UNPLUG AND REPLUG THE TABLET NOW")
+    if WINDOWS:
+        print("  (if the tablet just starts up normally, replug it again: "
+              "the first time,\n  Windows may still be installing the "
+              "bootloader's driver)")
     if not device.wait_and_open(60):
         sys.exit("no bootloader appeared within 60s - aborting, "
                  "nothing flashed")
@@ -670,6 +946,10 @@ def flash(path):
 # command line
 # ===========================================================================
 def main():
+    if WINDOWS and hasattr(sys.stdout, "reconfigure"):
+        # Redirected output uses the ANSI code page, which may lack
+        # characters like "—" (e.g. cp932): print "?" rather than crash.
+        sys.stdout.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         epilog="Typical order: identify -> decrypt -> patch -> flash. "
@@ -703,8 +983,8 @@ def main():
                          help="list the available builds")
 
     p_flash = sub.add_parser("flash",
-                             help="flash an image (needs root; replug the "
-                                  "tablet when told)")
+                             help="flash an image (needs root on Linux; "
+                                  "replug the tablet when told)")
     p_flash.add_argument("image", help="image file to flash")
 
     args = parser.parse_args()
