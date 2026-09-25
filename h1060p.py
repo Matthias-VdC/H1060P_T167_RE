@@ -510,6 +510,23 @@ PATCHES = {
         "ca0f0023801859414008cb0718434910",
         "signed 64-bit halving: full divide routine -> 8-instruction "
         "shift (16 bytes)"),
+
+    # --- USB report polling ---------------------------------------------------
+    # The pen report endpoint tells the host to collect a report only
+    # every 2 ms (bInterval = 2 in its endpoint descriptor), delaying
+    # every report by 0-2 ms and capping delivery at 500 reports/s.
+    # The firmware's report sender never waits: if the previous report
+    # is still uncollected, the new one is silently dropped — so a scan
+    # producing faster than 500 reports/s makes the PC periodically
+    # receive a stale report (the cause of the stutter seen on the
+    # fastest build). bInterval 1 — the full-speed norm — makes the
+    # host collect every 1 ms frame instead. Scan timing is untouched.
+    "usb_poll_every_1ms": (
+        0x59A3, "02", "01",
+        "pen endpoint (EP 0x81) host polling: every 2 ms -> every 1 ms"),
+    "usb_poll_every_1ms_aux": (
+        0x59BC, "02", "01",
+        "default-mode endpoint (EP 0x82) host polling: 2 ms -> 1 ms"),
 }
 
 # Applied only with --raw (hardware smoothing OFF).
@@ -529,27 +546,32 @@ BUILDS = {
         "rate": "~470Hz",
         "desc": "RECOMMENDED (default). The same feature set with longer, "
                 "more cautious sensor wait times — the highest rate with "
-                "no observed issues.",
-        "md5": "6176bde35f533c146915f31cb5381362",
-        "md5_raw": "8b2231dff89596200adccba8254d1d3b",
+                "no observed issues, and no rate dip while tapping.",
+        "md5": "44490905fc8bc3f8266c49e5afa80c29",
+        "md5_raw": "a1cc3b72402d490cc755de4f7571b39a",
         "patches": [
             "settle_adc_wake_6", "settle_mux_32", "settle_ringdown_40",
             "remove_tilt_x", "remove_tilt_y",
             "remove_remeasure_normal_pressure",
+            "remove_remeasure_light_touch",
             "x_window_read_five_coils", "x_window_clear_unused_slot",
             "y_window_read_five_coils", "y_window_clear_unused_slot",
             "x_window_data_location_check", "y_window_data_location_check",
             "fast_64bit_multiply", "fast_64bit_divide",
             "fast_32bit_divide", "fast_64bit_halve",
+            "usb_poll_every_1ms", "usb_poll_every_1ms_aux",
         ],
     },
     "500hz": {
         "rate": "~500Hz",
         "desc": "EXPERIMENTAL. Every improvement including the shortest "
-                "sensor waits — the fastest build, but it has shown "
-                "stuttering in live use. If it misbehaves, flash 470hz.",
-        "md5": "07e3834605f7f57a5f593f4b789f8c92",
-        "md5_raw": "229be243cf5fbf069c8c17ff57102e91",
+                "sensor waits — the fastest build. Its earlier stutter "
+                "traced to the USB 2 ms polling cap (reports produced "
+                "faster than the host collected them), now fixed in all "
+                "builds; it stays experimental until re-tested. If it "
+                "misbehaves, flash 470hz.",
+        "md5": "070f28519df8c8c7d9abda9767069286",
+        "md5_raw": "19ae41187e29a28927997228c5ac3ab7",
         "patches": [
             "settle_adc_wake_4", "settle_mux_16", "settle_ringdown_25",
             "remove_tilt_x", "remove_tilt_y",
@@ -560,13 +582,14 @@ BUILDS = {
             "x_window_data_location_check", "y_window_data_location_check",
             "fast_64bit_multiply", "fast_64bit_divide",
             "fast_32bit_divide", "fast_64bit_halve",
+            "usb_poll_every_1ms", "usb_poll_every_1ms_aux",
         ],
     },
     "420hz": {
         "rate": "~420Hz",
         "desc": "Additionally keeps the original (slow) math routines.",
-        "md5": "7bbb51e0e25895a9ca973526c5ae6d3d",
-        "md5_raw": "7f6e4c104dbcfbe3a32c03dd92a3247c",
+        "md5": "85963a862fcfaa3e325204dd34036f5a",
+        "md5_raw": "b3dd7f3da834f4273e954de898e1cf0c",
         "patches": [
             "settle_adc_wake_6", "settle_mux_32", "settle_ringdown_40",
             "remove_tilt_x", "remove_tilt_y",
@@ -574,18 +597,20 @@ BUILDS = {
             "x_window_read_five_coils", "x_window_clear_unused_slot",
             "y_window_read_five_coils", "y_window_clear_unused_slot",
             "x_window_data_location_check", "y_window_data_location_check",
+            "usb_poll_every_1ms", "usb_poll_every_1ms_aux",
         ],
     },
     "380hz": {
         "rate": "~380Hz",
         "desc": "Additionally keeps the original 6-coil window scan — "
                 "the smallest step away from stock behavior.",
-        "md5": "73225573e8b4cc10696d97af23820e16",
-        "md5_raw": "97900462e38efb75b20cdcd6a66ae7de",
+        "md5": "2f17be81cc2d9812b3ab45182bbdd1c9",
+        "md5_raw": "1024ce2c4266cbbd4bba112511db4ca5",
         "patches": [
             "settle_adc_wake_6", "settle_mux_32", "settle_ringdown_40",
             "remove_tilt_x", "remove_tilt_y",
             "remove_remeasure_normal_pressure",
+            "usb_poll_every_1ms", "usb_poll_every_1ms_aux",
         ],
     },
 }

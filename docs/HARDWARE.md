@@ -108,22 +108,31 @@ bit-exact equivalents (~1200).
 The report builder (0x08003158) emits a 12-byte HID report: bytes 2–3 X,
 4–5 Y, 6–7 pressure, 8–9 high coordinate bits, 10–11 tilt.
 
-Before output, stock firmware smooths in three stages — all optional
-via the patch tool:
+Before output, stock firmware smooths the position in two stages —
+all optional via the patch tool:
 
-- an EMA on coordinates (0x08001B34)
+- a speed-adaptive EMA on coordinates (0x08001B34): its alpha scales
+  with pen speed, so it adds almost no lag while the pen moves and
+  damps strongly while it is still
 - a 3-entry moving average on coordinates (0x080054F4)
-- a 15-entry moving average on the raw coil window values (0x08003BE0)
 
-The coil-window average is the one that damps the known EMR artifact
-where the cursor jitters exactly between two coils (the window argmax
-flips between two nearly-equal peaks); removing it makes that jitter
-visible, keeping it while removing the other two leaves output positions
-unfiltered but the flip damped.
+A third filter, a 15-entry moving average (0x08003BE0), smooths only
+the tilt estimate (report bytes 10–11, ignored by drivers on this
+model) and does not affect the cursor position.
+
+With the filters bypassed, the reported position is the raw per-cycle
+sensor estimate, which jitters a few counts even under a still pen —
+invisible at default area sizes, but magnified into visible cursor
+vibration by a small active area (fewer tablet counts per screen
+pixel).
 
 ## USB and flashing
 
-While running: HID tablet, VID 256C:006D. To flash: the NuMicro LDROM
+While running: HID tablet, VID 256C:006D — two interfaces: interface 0
+(the pen, interrupt IN endpoint 0x81, 64-byte reports) and interface 1
+(driverless default mode, endpoint 0x82, 16-byte reports). Both
+endpoints declare bInterval = 2 in stock firmware, i.e. the host
+collects a report only every 2 ms — the patch tool changes this to 1 ms. To flash: the NuMicro LDROM
 bootloader enumerates for ~2.5 s after replugging as 0416:3F00 and
 speaks the vendor's ISP protocol over 64-byte HID packets — a fixed
 handshake, an UPDATE-APROM command carrying the image, and a final ACK
@@ -145,9 +154,14 @@ Rate is bounded by real analog work, in this order:
 
 Stock: 21 measurements ≈ 4.33 ms ≈ 231 Hz. Patched: 15 measurements ≈
 2.1 ms ≈ 470 Hz (a ~500 Hz variant exists). The stock-code ceiling is
-roughly 700–800 Hz (needs a burst cut); USB full-speed itself caps at
-1000 reports/s (one per 1 ms frame) — reaching that requires a
-purpose-built acquisition cycle, not patching.
+roughly 700–800 Hz (needs a burst cut). Delivery: the stock pen
+endpoint asks the host to poll only every 2 ms (bInterval = 2, capping
+delivery at 500 reports/s with ~1 ms average extra latency, and —
+since the report sender drops a report when the previous one is still
+uncollected — injecting stale reports whenever the scan outpaces
+collection); every patched build changes this to the full-speed norm of
+1 ms. 1000 Hz itself requires a purpose-built acquisition cycle, not
+patching.
 
 ## Provenance and scope
 

@@ -85,8 +85,8 @@ Both are plain options — pick whichever you prefer.
 
 | Build | Rate | What it is |
 |---|---|---|
-| `470hz` | ~470Hz | recommended and default — the highest rate with no observed issues |
-| `500hz` | ~500Hz | experimental — every improvement incl. the shortest sensor waits; has shown stuttering in live use |
+| `470hz` | ~470Hz | recommended and default — the highest rate with no observed issues, and no rate dip while tapping |
+| `500hz` | ~500Hz | experimental — every improvement incl. the shortest sensor waits; its earlier stutter traced to the USB 2 ms polling cap, now fixed in all builds |
 | `420hz` | ~420Hz | additionally stock math routines |
 | `380hz` | ~380Hz | additionally stock coil scan — smallest change from stock |
 
@@ -161,6 +161,10 @@ testing proved safe to remove:
 - **rewritten math routines** — the pressure math used slow generic 64-bit
   multiply/divide loops; the replacements are bit-exact, proven against the
   originals over thousands of test vectors
+- **1 ms USB polling** — stock firmware tells the PC to collect a report
+  only every 2 ms (adding ~1 ms average latency and capping delivery at
+  500 reports/s, which also caused the fastest build's stutter); patched
+  builds ask for the full-speed norm of every 1 ms
 
 What is deliberately *not* touched: the resonant pulse timing (the pen's
 physics), and — unless you pass `--raw` — the input smoothing filters.
@@ -177,12 +181,23 @@ updater uses. Worst case, reflash the stock image.
 report, each a burst of pulses plus settling time. ~470 Hz is the highest
 rate with no observed issues (the experimental build reaches ~500 Hz);
 the absolute ceiling of this sensing architecture is around ~700 Hz with
-signal-quality trade-offs.
+signal-quality trade-offs. USB delivery used to add more: stock firmware
+asks the PC to collect a report only every 2 ms (capping delivery at
+500 reports/s with ~1 ms average extra latency); every build here changes
+that to the full-speed norm of 1 ms.
 
 **Does the driver matter?** Use OpenTabletDriver for the best result. The
 stock smoothing removal (`--raw`) means positions reach the PC exactly as
 measured — a good driver-side filter can then do better than the tablet's
 fixed one.
+
+**Why does my cursor jitter or vibrate with `--raw`?** Each report is the
+raw per-cycle sensor estimate, which varies by a few counts even under a
+perfectly still pen. At default area sizes that is sub-pixel and
+invisible, but a small active area maps fewer tablet counts to each
+screen pixel and magnifies it. The default (smoothing on) build damps
+it, and a driver-side low-pass filter in OpenTabletDriver does the same
+job with tunable strength — both are plain options.
 
 ## License
 

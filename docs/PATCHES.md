@@ -21,6 +21,7 @@ reproduced.
 | redundant re-measures | 2 | 5 fewer measurements per touch report |
 | position window | 4 (+2 asserts) | one fewer coil read per axis per cycle |
 | math runtime | 4 | ~6x faster pressure interpolation, bit-exact |
+| USB report polling | 2 | host collects every 1 ms instead of every 2 ms |
 
 Total footprint vs stock: about 210 bytes changed, most of it inside the
 four replaced math routines. Everything is reversible by reflashing the
@@ -67,9 +68,12 @@ the 470hz column has the long clean history and is the default.
 ## 2. Input smoothing (only with `--raw`)
 
 **Firmware context.** Between the scan and the USB report the firmware
-smooths three times: an exponential moving average on the coordinates,
-a 3-sample moving average on the coordinates, and a 15-sample moving
-average on the raw coil window values (before peak-picking).
+smooths the position twice: a speed-adaptive exponential moving average
+on the coordinates (near-zero lag while the pen moves, strong damping
+while it is still), then a 3-sample moving average on the coordinates.
+A third filter, a 15-sample moving average, smooths only the tilt
+estimate — a value that lands in report bytes 10–11, which tablet
+drivers ignore on this model. It has no effect on the cursor.
 
 **Change.** Each filter's first instruction is replaced so the
 function returns immediately, passing its input through unchanged:
@@ -77,16 +81,17 @@ function returns immediately, passing its input through unchanged:
 ```asm
 0x1B34:  push {r4, lr}      ->  bx lr            ; EMA on coordinates
 0x54F4:  push {r0-r7, lr}   ->  mov r0, r1; bx lr ; 3-sample coord SMA
-0x3BE0:  push {r0-r7, lr}   ->  mov r0, r1; bx lr ; 15-sample coil SMA
+0x3BE0:  push {r0-r7, lr}   ->  mov r0, r1; bx lr ; 15-sample tilt SMA
 ```
 
 **Why it is safe.** These are pure output transforms; removing them
-changes no measurement or tracking logic. Note for users: the
-15-sample *coil* average is what damps the known artifact where the
-cursor jitters exactly between two coils (the window peak-picker
-alternates between two nearly-equal coils). With `--raw` that damping
-is gone and the artifact can appear; keeping only this filter while
-removing the other two is a reasonable middle setting.
+changes no measurement or tracking logic. Note for users: with `--raw`
+the reported position is the raw per-cycle sensor estimate, which
+jitters a few counts even under a perfectly still pen. That is normal
+and invisible at default area sizes, but a small active area (fewer
+tablet counts per screen pixel) magnifies it into visible cursor
+vibration. The stock coordinate filters damp exactly this; a
+driver-side filter can do the same job.
 
 ## 3. Tilt calculation
 
@@ -189,6 +194,35 @@ simulated stock run with the real calibration table — 612 test cases,
 zero mismatches. Result: ~1200 executed instructions, and the same
 numbers the stock firmware would have produced, every cycle.
 
+## 7. USB report polling
+
+**Firmware context.** The pen endpoint's descriptor tells the host how
+often to collect a report. Stock declares an interrupt endpoint with
+bInterval = 2 — the host polls only every 2 ms. Two consequences:
+
+- every report waits 0–2 ms (average ~1 ms) before the PC reads it,
+  and the 2 ms scan period beats against the 2 ms poll period, so
+  roughly every 16th report waits a further 2 ms;
+- delivery is capped at 500 reports/s, and the firmware's report
+  sender never blocks — when the previous report is still uncollected
+  the new one is silently dropped. A scan producing faster than
+  500 Hz therefore makes the PC periodically receive a stale report:
+  the periodic hitch seen on the fastest build.
+
+**Change.** One byte in each endpoint descriptor:
+
+```asm
+0x59A3:  bInterval 02 -> 01    ; pen endpoint (EP 0x81)
+0x59BC:  bInterval 02 -> 01    ; default-mode endpoint (EP 0x82)
+```
+
+**Why it is safe.** Nothing in the tablet changes: the scan timing,
+the reports, and the protocol are untouched — only how often the host
+asks for them (1 ms is the full-speed norm; bInterval 2 buys the
+vendor nothing but battery on the host side). Delivery latency halves
+on average, worst case drops from 2 ms to 1 ms, and no report below
+1000 Hz can be dropped anymore. Applied in every build.
+
 ---
 
 ## History
@@ -197,5 +231,7 @@ The groups above were built and validated in this order, each live-
 tested before the next: settle delays (231→330 Hz) → smoothing
 options → tilt removal (→380 Hz) → re-measure removal → window shrink
 (→420 Hz) → math runtime (→470 Hz) → deeper settle tuning (→500 Hz,
-experimental). The 470hz default is the combination with the longest
-clean track record.
+experimental). Later additions: the light-touch re-measure removal
+joined the default build (no more ~350 Hz dip while tapping), and the
+USB 1 ms polling fix landed in every build after the 2 ms cap was
+identified as the cause of the fastest build's stutter.
