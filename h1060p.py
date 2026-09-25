@@ -590,11 +590,10 @@ RAW_PATCHES = [
 BUILDS = {
     "730hz": {
         "rate": "~730Hz",
-        "desc": "DEFAULT. The fastest build on the proven-safe sensor "
-                "waits; the pressure tracker runs every 15th cycle, so "
-                "pen clicks gain up to ~20 ms latency and pressure "
-                "updates ~49 times/s — for players who click with a "
-                "keyboard. Pen-clickers should use 470hz instead.",
+        "desc": "DEFAULT, fastest. Pen pressure updates every 15th "
+                "report (~49/s) and clicks can arrive ~20 ms late — "
+                "meant for players who click with a keyboard. "
+                "Pen-clickers should use 470hz instead.",
         "md5": "2aa4b30c435d9b2d7c7aaec183b7f234",
         "md5_raw": "3f5827e0d43d50ebb19dbc5c2f360526",
         "md5_notap": "78d44c82e00c38da2bcfb8ea717650ea",
